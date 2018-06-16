@@ -1,0 +1,1211 @@
+---
+title: "Ninth Week: Principal Component Analysis and Factor Analysis"
+subtitle: "PCA, Stock, image, ..."
+author: "Kayhan Momeni"
+date: "24 Ordibehesht 1397"
+output:
+  prettydoc::html_pretty:
+    fig_width: 10
+    theme: leonids
+    highlight: github
+---
+
+<div align="center">
+<img  src="images/stock.jpg"  align = 'center'>
+</div>
+
+> <p dir="RTL"> 
+با استفاده از داده های OHLCV شرکت های تشکیل دهنده شاخص s&p500 و همچنین داده مربوط به شاخص های اقتصادی به سوالات زیر پاسخ دهید.
+</p>
+
+<p dir="RTL">
+ابتدا باید پکیج های مورد نیاز را صدا بزنیم و داده ها را وارد کنیم:
+</p>
+```{r, eval=FALSE}
+library(readr)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(highcharter)
+library(quantmod)
+library(ggplot2)
+library(ggthemes)
+library(ROCR)
+library(jpeg)
+library(EBImage)
+
+
+constituents = read_csv("/Users/kayhan/Desktop/class_data/constituents.csv")
+
+files = list.files("/Users/kayhan/Desktop/class_data/stock_dfs")
+names = str_replace(files, ".csv","")
+isValid = names %in% constituents$Symbol
+files = files[isValid]
+names = str_replace(files, ".csv","")
+
+newFile = read_csv(paste("/Users/kayhan/Desktop/class_data/stock_dfs/",
+                         files[1], sep = ""))
+
+constituents %>%
+  filter(Symbol==names[1]) %>%
+  .$Name ->name
+
+constituents %>%
+  filter(Symbol==names[1]) %>%
+  .$Sector ->sector
+
+newFile %>%
+  mutate(Symbol = names[1], Name=name, Sector=sector) -> data
+
+
+for (index in 2:length(files))
+{
+  newFile = read_csv(paste("/Users/kayhan/Desktop/class_data/stock_dfs/"
+                           ,files[index], sep = ""))
+
+  constituents %>%
+    filter(Symbol==names[index]) %>%
+    .$Name -> name
+  
+  constituents %>%
+    filter(Symbol==names[index]) %>%
+    .$Sector ->sector
+  
+  newFile %>%
+    mutate(Symbol = names[index], Name=name, Sector=sector) -> tmp
+  
+  data = rbind(data, tmp)
+  
+  print(index)
+}
+
+data %>%
+  select(Symbol, Name, Sector, Date, Open, High,
+         Low, Close, Volume, `Adj Close`) -> data
+```
+
+```{r include=FALSE, cache=FALSE}
+library(readr)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(highcharter)
+library(quantmod)
+library(ggplot2)
+library(ggthemes)
+library(ROCR)
+library(jpeg)
+library(EBImage)
+
+
+data = read_csv("/Users/kayhan/Desktop/class_data/Data.csv")
+```
+<p dir="RTL">
+حالا دیتافریم 
+data 
+محتوی اطلاعات تمام فایل های درون پوشه ی 
+stock_dfs 
+به همراه اطلاعات فایل 
+constituents.csv 
+برای هرشرکت است. توجه شود که اطلاعات ۴۰ شرکت درون پوشه ی 
+stock_dfs 
+درون فایل 
+constituents.csv 
+موجود نبود که این داده ها از دیتافریم 
+data 
+حذف شده اند و در ادامه آن ها را تحلیل نمی کنیم.
+</p>
+***
+
+<h5 dir="RTL">
+۱. چه شرکتی رکورددار کسب بیشترین سود در بازه یکساله، دو ساله و پنج ساله می باشد؟ این سوال را برای بخش های مختلف مورد مطالعه قرار دهید و رکورددار را معرفی کنید. (برای این کار به ستون sector داده constituents مراجعه کنید.) برای هر دو قسمت نمودار سود ده شرکت و یا بخش برتر را رسم نمایید.
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+<p dir="RTL">
+می خواهیم به ازای هر روز، سود آن را در بازه های یکساله، دوساله و پنج ساله حساب کنیم. می توانیم برای اینکار، از تابع 
+lead 
+در کتابخانه ی 
+dplyr 
+استفاده کنیم. اما مشکلی که وجود دارد این است که اطلاعات مربوط به قیمت سهام  شرکت ها، بر اساس تاریخ کامل نیست. یعنی داده ی مربوط به برخی روزها در داده ها وجود ندارد و این باعث می شود که اگر مثلا قیمت سهام یک شرکت را در یک روز با ۳۶۵ ردیف بعدش مقایسه کنیم، سود مدتی بیشتر از یکسال را محاسبه کنیم. بنابراین باید داده ها را به ازای تاریخ هایی که وجود ندارند کامل کنیم و مثلا مقدار 
+NA 
+بگذاریم تا مقایسه هر ردیف با ۳۶۵ ردیف بعدش، دقیقا به محاسبه ی سود یکساله منجر شود:
+</p>
+```{r, warning=FALSE}
+data %>%
+  group_by(Symbol, Name, Sector) %>%
+  complete(Date = seq.Date(min(Date), max(Date), by="day")) -> data
+```
+<p dir="RTL">
+حالا می توان مقدار افزایش و مقدار افزایش نسبی قیمت سهام هرشرکت را به ازای هر روز آن حساب کرد:
+</p>
+```{r, warning=FALSE}
+data %>%
+  mutate(ProfitInOneMonth   = lead(Open, 30)   - Open,
+         ProfitInOneYear    = lead(Open, 365)   - Open,
+         ProfitInTwoYears   = lead(Open, 365*2) - Open,
+         ProfitInFiveYears  = lead(Open, 365*5) - Open,
+         
+         ProfitInOneMonthPercent   = ProfitInOneMonth*100/Open,
+         ProfitInOneYearPercent    = ProfitInOneYear*100/Open,
+         ProfitInTwoYearsPercent   = ProfitInTwoYears*100/Open,
+         ProfitInFiveYearsPercent  = ProfitInFiveYears*100/Open) -> tmp
+```
+<p dir="RTL">
+حالا به ازای هر روز، و هر شرکت می دانیم که اگر در آن روز سهام آن شرکت را میخریدیم، در بازه های یکساله و دوساله و پنج ساله، چند درصد از سرمایه مان به ما برمیگشت. باید به ازای هر شرکت، میزان درصد سودش را دربازه های خواسته شده به ازای روزهای مختلف میانگین بگیریم:
+</p>
+```{r, warning=FALSE}
+tmp %>%
+  group_by(Name) %>%
+  summarise(ProfitInOneYearPercent=
+              mean(ProfitInOneYearPercent, na.rm = T),
+            
+            ProfitInTwoYearsPercent=
+              mean(ProfitInTwoYearsPercent, na.rm = T),
+            
+            ProfitInFiveYearsPercent=
+              mean(ProfitInFiveYearsPercent, na.rm = T))->q1
+```
+
+<p dir="RTL">
+سودده ترین شرکت در مدت یکساله برابر است با:
+</p>
+```{r, warning=FALSE}
+q1 %>%
+  arrange(-ProfitInOneYearPercent) %>%
+  select(Name, ProfitInOneYearPercent) %>%
+  head(1)
+```
+<p dir="RTL">
+که شرکت 
+Equinix 
+با 
+269% 
+سود در بازه ی یکساله است. نمودار ده شرکت سودده در بازه ی یکساله بدین صورت است:
+</p>
+```{r, warning=FALSE}
+q1 %>%
+  arrange(-ProfitInOneYearPercent) %>%
+  top_n(10, ProfitInOneYearPercent) %>%
+  hchart(hcaes(x=Name, y=ProfitInOneYearPercent), 
+         type="column", name="Percent Of Profit") %>%
+  hc_xAxis(title = list(text = "Company")) %>%
+  hc_yAxis(title = list(text = "Percent of Profit in 1 Year")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL">
+برای بازه ی دوساله:
+</p>
+```{r, warning=FALSE}
+q1 %>%
+  arrange(-ProfitInTwoYearsPercent) %>%
+  select(Name, ProfitInTwoYearsPercent) %>%
+  head(1)
+
+q1 %>%
+  arrange(-ProfitInTwoYearsPercent) %>%
+  top_n(10, ProfitInTwoYearsPercent) %>%
+  hchart(hcaes(x=Name, y=ProfitInTwoYearsPercent), 
+         type="column", name="Percent Of Profit") %>%
+  hc_xAxis(title = list(text = "Company")) %>%
+  hc_yAxis(title = list(text = "Percent of Profit in 2 Years")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+
+<p dir="RTL">
+و برای بازه ی پنج ساله:
+</p>
+```{r, warning=FALSE}
+q1 %>%
+  arrange(-ProfitInFiveYearsPercent) %>%
+  select(Name, ProfitInFiveYearsPercent) %>%
+  head(1)
+
+q1 %>%
+  arrange(-ProfitInFiveYearsPercent) %>%
+  top_n(10, ProfitInFiveYearsPercent) %>%
+  hchart(hcaes(x=Name, y=ProfitInFiveYearsPercent), 
+         type="column", name="Percent Of Profit") %>%
+  hc_xAxis(title = list(text = "Company")) %>%
+  hc_yAxis(title = list(text = "Percent of Profit in 5 Years")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+
+<p dir="RTL">
+همانطور که مشخص است، پرسود ترین شرکت، در همه ی بازه های زمانی، شرکت 
+Equinix 
+بوده است. مایلیم به رشد سهام این شرکت نگاهی بیندازیم:
+</p>
+```{r, eval=FALSE}
+symbol=getSymbols("EQIX")
+```
+```{r, include=FALSE, cache=FALSE}
+symbol=getSymbols("EQIX")
+```
+
+```{r, warning=FALSE}
+highchart(type = "stock") %>% 
+  hc_title(text = "Equinix Chart") %>% 
+  hc_subtitle(text = "Data extracted using quantmod package") %>% 
+  hc_add_series(EQIX)
+```
+<p dir="RTL">
+حالا می خواهیم همین کار را به ازای بخش های مختلف انجام دهیم. داده ها را به ازای بخش های مختلف گروه بندی می کنیم و در هر گروه، میانگین سود شرکت های آن گروه را نماینده ی آن گروه در نظر میگیریم. سپس گروه های مختلف را با همدیگر مقایسه می کنیم:
+</p>
+```{r, warning=FALSE}
+tmp %>%
+  group_by(Name, Sector) %>%
+  summarise(ProfitInOneYearPercent=
+              mean(ProfitInOneYearPercent, na.rm = T),
+            
+            ProfitInTwoYearsPercent=
+              mean(ProfitInTwoYearsPercent, na.rm = T),
+            
+            ProfitInFiveYearsPercent=
+              mean(ProfitInFiveYearsPercent, na.rm = T)) -> q1
+```
+<p dir="RTL">
+در بازه ی یکساله:
+</p>
+```{r, warning=FALSE}
+q1 %>%
+  group_by(Sector) %>%
+  summarise(ProfitInOneYearPercent=
+              mean(ProfitInOneYearPercent, na.rm = T)) %>%
+  select(Sector, ProfitInOneYearPercent) %>%
+  arrange(-ProfitInOneYearPercent)
+
+q1 %>%
+  group_by(Sector) %>%
+  summarise(ProfitInOneYearPercent=
+              mean(ProfitInOneYearPercent, na.rm = T)) %>%
+  select(Sector, ProfitInOneYearPercent) %>%
+  arrange(-ProfitInOneYearPercent) %>%
+  hchart(hcaes(x=Sector, y=ProfitInOneYearPercent), 
+         type="column", name="Percent Of Profit") %>%
+  hc_xAxis(title = list(text = "Sector")) %>%
+  hc_yAxis(title = list(text = "Percent of Profit in 1 Year")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+
+<p dir="RTL">
+در بازه ی دوساله:
+</p>
+
+```{r, warning=FALSE}
+q1 %>%
+  group_by(Sector) %>%
+  summarise(ProfitInTwoYearsPercent=
+              mean(ProfitInTwoYearsPercent, na.rm = T)) %>%
+  select(Sector, ProfitInTwoYearsPercent) %>%
+  arrange(-ProfitInTwoYearsPercent)
+
+q1 %>%
+  group_by(Sector) %>%
+  summarise(ProfitInTwoYearsPercent=
+              mean(ProfitInTwoYearsPercent, na.rm = T)) %>%
+  select(Sector, ProfitInTwoYearsPercent) %>%
+  arrange(-ProfitInTwoYearsPercent) %>%
+  hchart(hcaes(x=Sector, y=ProfitInTwoYearsPercent), 
+         type="column", name="Percent Of Profit") %>%
+  hc_xAxis(title = list(text = "Sector")) %>%
+  hc_yAxis(title = list(text = "Percent of Profit in 2 Years")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL">
+و در بازه ی ۵ ساله:
+</p>
+```{r, warning=FALSE}
+q1 %>%
+  group_by(Sector) %>%
+  summarise(ProfitInFiveYearsPercent=
+              mean(ProfitInFiveYearsPercent, na.rm = T)) %>%
+  select(Sector, ProfitInFiveYearsPercent) %>%
+  arrange(-ProfitInFiveYearsPercent)
+
+q1 %>%
+  group_by(Sector) %>%
+  summarise(ProfitInFiveYearsPercent=
+              mean(ProfitInFiveYearsPercent, na.rm = T)) %>%
+  select(Sector, ProfitInFiveYearsPercent) %>%
+  arrange(-ProfitInFiveYearsPercent) %>%
+  hchart(hcaes(x=Sector, y=ProfitInFiveYearsPercent), 
+         type="column", name="Percent Of Profit") %>%
+  hc_xAxis(title = list(text = "Sector")) %>%
+  hc_yAxis(title = list(text = "Percent of Profit in 5 Years")) %>%
+  hc_add_theme(hc_theme_ffx()) 
+```
+<p dir="RTL">
+که بخش 
+Real Estate 
+(بیزینس خرید، فروش و اجاره ی کالاهای واقعی)
+که شرکت 
+Equinix 
+هم در آن قرار دارد، سودده ترین بخش است.
+</p>
+***
+
+<h5 dir="RTL">
+۲. یک اعتقاد خرافی می گوید خرید سهام در روز سیزدهم ماه زیان آور است. این گزاره را مورد ارزیابی قرار دهید.
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+<p dir="RTL">
+سود حاصل از خرید هر سهام در هر روز را در بازه های یکماهه، یکساله، دوساله و پنج ساله حساب کرده ایم. می توانیم داده ها را بر حسب روز معامله دسته بندی کنیم و میانگین سودهای یک ماهه، یکساله، دوساله و پنج ساله آن ها را حساب کنیم:
+</p>
+```{r, warning=FALSE}
+tmp %>%
+  mutate(Day = strftime(Date,'%d')) %>%
+  group_by(Day) %>%
+  summarise(ProfitInOneMonthPercent=
+            mean(ProfitInOneMonthPercent, na.rm = T),
+    
+            ProfitInOneYearPercent=
+            mean(ProfitInOneYearPercent, na.rm = T),
+            
+            ProfitInTwoYearsPercent=
+            mean(ProfitInTwoYearsPercent, na.rm = T),
+            
+            ProfitInFiveYearsPercent=
+            mean(ProfitInFiveYearsPercent, na.rm = T)) -> q2
+```
+<p dir="RTL">
+جایگاه میانگین سود خریدهای روز ۱۳ ام در بین سایر روزها در بازه های یک ماهه و ۵ ساله به صورت زیر است:
+</p>
+```{r, warning=FALSE}
+q2 %>%
+  hchart(type="column", hcaes(x=Day, y=ProfitInOneMonthPercent),
+         name="Average of Profit") %>%
+  hc_xAxis(title = list(text = "Day")) %>%
+  hc_yAxis(title = list(text = "Avg. Percent of Profit in 1 Month")) %>%
+  hc_add_theme(hc_theme_ffx())
+
+q2 %>%
+  hchart(type="column", hcaes(x=Day, y=ProfitInFiveYearsPercent),
+         name="Average of Profit") %>%
+  hc_xAxis(title = list(text = "Day")) %>%
+  hc_yAxis(title = list(text = "Avg. Percent of Profit in 5 Years")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL">
+به نظر نمی آید که جایگاه روز ۱۳ ام، جایگاه بدی باشد! بهتر است به رنکینگش نگاهی بیندازیم:
+</p>
+```{r, warning=FALSE}
+q2 %>%
+  arrange(-ProfitInOneMonthPercent) %>%
+  mutate(rank1Month=row_number()) %>%
+  arrange(-ProfitInOneYearPercent) %>%
+  mutate(rank1year=row_number()) %>%
+  arrange(-ProfitInTwoYearsPercent) %>%
+  mutate(rank2years=row_number()) %>%
+  arrange(-ProfitInFiveYearsPercent) %>%
+  mutate(rank5years=row_number()) %>%
+  select(Day, rank1Month, rank1year, rank2years, rank5years) %>%
+  filter(Day==13)
+```
+<p dir="RTL">
+اولا خرید در روز ۱۳ ام ماه، به طور میانگین منجر به سودهای ۰.۹۶۶، ۱۲.۱، ۲۳.۷ و ۷۳.۲ درصدی در بازه های یکماهه و یکساله و دوساله و پنجساله می شود که همگی مثبت هستند. بنابراین خرید در این روزها زیان ده نیستند. ثانیا هم نسبت به خرید در سایر روزها بدترین جایگاه ممکن را ندارد. مثلا در بازه ی پنجساله، دهمین روز پرسود در بین روزهای ماه، روزهای ۱۳ ام ماه بوده است!
+</p>
+***
+
+<h5 dir="RTL">
+۳. رکورد بیشترین گردش مالی در تاریخ بورس برای چه روزی بوده است و چرا!!!
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+<p dir="RTL">
+ما در داده ها حجم معاملات را تحت عنوان ستون 
+Volume 
+برای هر روز و هر شرکت داریم. برای محاسبه ی بیشترین حجم معامله در کل بازار، داده ها را بر حسب روز گروه بندی می کنیم و در هر روز، مجموع حجم معاملات کل شرکت ها را حساب می کنیم:
+</p>
+```{r, warning=FALSE}
+data %>%
+  group_by(Date) %>%
+  summarise(Volume = sum(Volume, na.rm = T)) %>%
+  arrange(-Volume) %>%
+  head()
+```
+<p dir="RTL">
+که بیشترین حجم معامله، مربوط به روز دهم اکتبر سال ۲۰۰۸ میلادی بوده است. در این روز بسیاری از بازارهای مالی دچار فروپاشی شدند. ارزش سهام صنتعتی داو جونز با سقوط بی سابقه بیش از ۱۰ درصد کاهش ارزش کل سهام در همان چند دقیقه اول شروع معاملات آغاز شد ولی در ساعت آخر کار بازار با افزایش باورنکردنی یکباره ارزش کل سهام مواجه شد و نهایتا با ۱٫۴ درصد کاهش ارزش کل به کار خود پایان داد. سال ۲۰۰۸ سالی بود که اقتصاد جهان دچار یک بحران شد. برای اطلاعات بیشتر:
+</p>
+<p dir="RTL">
+[اطلاعات بیشتر](https://www.nytimes.com/2008/10/11/business/11markets.html?hp)
+</p>
+<p dir="RTL">
+البته سوال «گردش مالی» را خواسته است. گردش مالی به صورت زیر محاسبه می شود:
+</p>
+$$ \frac{Close+Open}{2}\times Volume$$
+<p dir="RTL">
+میتوان به طور مشابه، بیشترین گردش مالی های تاریخ را هم حساب کرد:
+</p>
+```{r, warning=FALSE}
+data %>%
+  mutate(TurnOver = (Open+Close)*Volume/2) %>%
+  group_by(Date) %>%
+  summarise(TurnOver = sum(TurnOver, na.rm = T)) %>%
+  arrange(-TurnOver) %>%
+  head()
+```
+***
+
+<h5 dir="RTL">
+۴. شاخص AAPL که نماد شرکت اپل است را در نظر بگیرید. با استفاده از رگرسیون خطی یک پیش بینی کننده قیمت شروع (open price) بر اساس k روز قبل بسازید. بهترین انتخاب برای k چه مقداری است؟ دقت پیش بینی شما چقدر است؟
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+<p dir="RTL">
+ابتدا داده های مربوط به شرکت اپل را جدا می کنیم:
+</p>
+```{r, warning=FALSE}
+data %>%
+  filter(Symbol=="AAPL") -> apple
+```
+<p dir="RTL">
+سپس تابع 
+modelMaker 
+را به گونه ای مینویسیم که با گرفتن عدد 
+$k$، 
+روی ۸۰ درصد از داده ها مدل خطی برای پیش بینی قیمت 
+Open 
+بر اساس قیمت 
+OHLCV 
+در 
+$k$ 
+روز پیش بسازد و روی ۲۰ درصد باقی مانده از داده ها، مدل را آزمایش کند. در نهایت هم درصد خطایی که طبق فرمول زیر حساب می شود را برگرداند:
+</p>
+$$\frac{|Predict-Open|}{Open}\times 100$$
+```{r, warning=FALSE}
+modelMaker = function(k)
+{
+  apple %>%
+    mutate(KO=lag(Open, k), 
+           KH=lag(High, k),
+           KL=lag(Low, k),
+           KC=lag(Close, k), 
+           KV=lag(Volume, k))->tmp
+  
+  mydata = split(tmp, sample(1:5, nrow(tmp), replace=T))
+  d = mydata[1:4]
+  data1 = do.call("rbind", d)
+  d = mydata[5]
+  data2 = do.call("rbind", d)
+  
+  model = lm(Open ~ KO+KH+KL+KC+KV, data = data1)
+  
+  data2$PredictOpen = predict(model, data2)
+  
+  data2 %>%
+    filter(!is.na(Open) & !is.na(PredictOpen)) %>%
+    mutate(err=abs(PredictOpen-Open)*100/Open) -> data2
+  
+  return(mean(data2$err))
+}
+```
+<p dir="RTL">
+سپس اعداد ۱ تا ۱۰۰ را به عنوان ورودی به تابع بالا می دهیم و خطا را به ازای هر 
+$k$ 
+محاسبه می کنیم:
+</p>
+```{r, warning=FALSE}
+K=1:100
+lmK = 1:length(K)
+
+for (i in K)
+  lmK[i] = modelMaker(K[i])
+
+df = data.frame(K, lmK)
+```
+<p dir="RTL">
+در نهایت هم می توان درصد خطا برحسب 
+$k$ 
+را رسم کرد:
+</p>
+```{r, warning=FALSE}
+df %>%
+  hchart(hcaes(x=K, y=lmK), type="line", name="Error(%)") %>%
+  hc_xAxis(title = list(text = "k")) %>%
+  hc_yAxis(title = list(text = "Error (%)")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL">
+همانطور که مشخص است، کمترین خطا به ازای 
+$k=1$ 
+اتفاق می افتد و به طور کلی با افزایش 
+$k$ 
+خطا هم افزایش می یابد.
+</p>
+***
+
+<h5 dir="RTL">
+۵. بر روی داده های قیمت شروع شرکت ها الگوریتم pca را اعمال کنید. نمودار تجمعی درصد واریانس بیان شده در مولفه ها را رسم کنید. سه مولفه اول چند درصد از واریانس را تبیین می کند؟
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+<p dir="RTL">
+ابتدا باید به صورت مشابه سوال ۱ که داده ها را خواندیم، تک تک شرکت ها را بخوانیم. در نهایت به این صورت داده ها را ذخیره کنیم که یک دیتا فریم داشته باشیم با یک ردیف 
+Date 
+و به ازای هر شرکت هم یک ردیف داشته باشیم. به عنوان نماینده ی هر شرکت در هر روز، قیمت 
+Close 
+را در نظر میگیریم:
+</p>
+```{r, warning=FALSE, eval=FALSE}
+files = list.files("/Users/kayhan/Desktop/class_data/stock_dfs")
+names = str_replace(files, ".csv","")
+
+newFile = read_csv(paste("/Users/kayhan/Desktop/class_data/stock_dfs/",files[1], sep = ""))
+newFile %>%
+  select(Date, Open)->PCAData
+colnames(PCAData)[2] = names[1]
+
+for (index in 2:length(files))
+{
+  newFile = read_csv(paste("/Users/kayhan/Desktop/class_data/stock_dfs/",files[index], sep = ""))
+  newFile %>%
+    select(Date, Open)->tmp
+  merge(PCAData, tmp) -> PCAData
+  
+  colnames(PCAData)[index+1] = names[index]
+}
+```
+
+```{r include=FALSE, cache=FALSE}
+files = list.files("/Users/kayhan/Desktop/class_data/stock_dfs")
+names = str_replace(files, ".csv","")
+
+newFile = read_csv(paste("/Users/kayhan/Desktop/class_data/stock_dfs/",files[1], sep = ""))
+newFile %>%
+  select(Date, Open)->PCAData
+colnames(PCAData)[2] = names[1]
+
+for (index in 2:length(files))
+{
+  newFile = read_csv(paste("/Users/kayhan/Desktop/class_data/stock_dfs/",files[index], sep = ""))
+  newFile %>%
+    select(Date, Open)->tmp
+  merge(PCAData, tmp) -> PCAData
+  
+  colnames(PCAData)[index+1] = names[index]
+}
+```
+<p dir="RTL">
+حالا می توانیم روی اطلاعات مربوط به بازار بورس، 
+PCA 
+بزنیم:
+</p>
+```{r, warning=FALSE}
+pca = prcomp(PCAData[,-1], center=T, scale. = T)
+```
+<p dir="RTL">
+و واریانس ها را حساب کنیم:
+</p>
+```{r, warning=FALSE}
+vars=pca$sdev^2
+```
+<p dir="RTL">
+سپس باید نسبت هر واریانس را نسبت به مجموع واریانس ها حساب کنیم (تا بفهمیم هر مولفه حاوی چه میزان از اطلاعات است):
+</p>
+```{r, warning=FALSE}
+vars = vars*100/sum(vars)
+```
+<p dir="RTL">
+در نهایت هم می توان درصد تجمعی هر مولفه را حساب کرد:
+</p>
+```{r, warning=FALSE}
+cumVars = cumsum(vars)
+```
+<p dir="RTL">
+و نمودار تجمعی درصد واریانس ها را برحسب شماره مولفه رسم کرد:
+</p>
+```{r, warning=FALSE}
+df = data.frame(vars, cumVars)
+df %>%
+  mutate(index=row_number()) %>%
+  hchart(hcaes(x=index, y=cumVars), type="scatter", name="Cumulative Variance(%)")%>%
+  hc_xAxis(title = list(text = "Index")) %>%
+  hc_yAxis(title = list(text = "Cumulative Variance(%)")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL">
+همچنین میخواهیم بفهمیم سه مولفه اول چند درصد واریانس را تبیین می کنند:
+</p>
+```{r, warning=FALSE}
+cumVars[3]
+```
+<p dir="RTL">
+همانطور که مشخص است، سه مولفه اول، حدودا ۷۹.۷۶ درصد از واریانس را تبیین می کنند.
+</p>
+***
+
+<h5 dir="RTL">
+۶. برای هر نماد اطلاعات بخش مربوطه را از داده constituents استخراج نمایید. برای هر بخش میانگین روزانه قیمت شروع شرکت های آن را محاسبه کنید. سپس با استفاده از میانگین به دست آمده  داده ایی با چند ستون که هر ستون یک بخش و هر سطر یک روز هست بسازید. داده مربوط را با داده شاخص های اقتصادی ادغام کنید. بر روی این داده pca بزنید و نمودار biplot آن را تفسیر کنید.
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+
+<p dir="RTL">
+اطلاعات مربوط به بخش 
+constituents 
+را قبلا در سوال ۱ استخراج کرده ایم و الان در متغیر 
+data 
+ذخیره است. ابتدا با استفاده از دستور 
+group_by 
+داده ها را بر حسب روز و بخش دسته بندی می کنیم. سپس به ازای هر بخش در هر روز، میانگین قیمت 
+Open 
+شرکت های آن بخش را حساب می کنیم. سپس با استفاده از دستور 
+spread 
+از کتابخانه ی 
+tidyr، 
+هر بخش را به یک ستون تبدیل می کنیم:
+</p>
+```{r, warning=FALSE}
+data %>%
+  group_by(Date, Sector) %>%
+  summarise(Open=mean(Open, na.rm = T)) %>%
+  spread(Sector, Open) ->tmp
+```
+<p dir="RTL">
+حالا باید شاخص های اقتصادی هر روز را از فایل 
+indexes 
+بخوانیم و با داده قبلی ادغام کنیم:
+</p>
+```{r, warning=FALSE}
+indexes = read_csv("/Users/kayhan/Desktop/class_data/indexes.csv")
+
+merge(tmp, indexes, by="Date") %>% 
+  na.omit() -> tmp
+```
+<p dir="RTL">
+حالا می توانیم روی این داده ها 
+PCA 
+بزنیم:
+</p>
+```{r, warning=FALSE}
+pca = prcomp(tmp[,-1], center=T, scale. = T)
+```
+<p dir="RTL">
+و نمودار تجمعی درصد واریانس ها را رسم کنیم:
+</p>
+```{r, warning=FALSE}
+vars=pca$sdev^2
+
+vars = vars*100/sum(vars)
+
+cumVars = cumsum(vars)
+
+df = data.frame(vars, cumVars)
+
+df %>%
+  mutate(index=row_number()) %>%
+  hchart(hcaes(x=index, y=cumVars), type="scatter", name="Cumulative Variance(%)")%>%
+  hc_xAxis(title = list(text = "Index")) %>%
+  hc_yAxis(title = list(text = "Cumulative Variance(%)")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL">
+همانطور که مشخص است، دو مولفه اول، ۸۴.۷ درصد از اطلاعات را در خود جای داده اند.بیایید به نمودار 
+biplot 
+این داده نگاهی بیندازیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+pcaData = as.data.frame(pca$x)
+ggplot(pcaData, aes(x=PC1, y=PC2, label=tmp$Date)) +
+  geom_point() + geom_label(color="blue") + theme_bw()
+```
+<p dir="RTL">
+چون لیبل مربوط به تاریخ ها بزرگ است، بهتر است هر روز را با یک عدد نشان دهیم به طوری که ترتیب تاریخی آن ها حفظ شود. همچنین نمودارهای مربوط به مولفه های اصلی داده را هم در فضای 
+biplot 
+مشاهده کنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+biplot(pca, cex=0.5, expand=0.8)
+```
+<p dir="RTL">
+نکته ی جالب توجه این است که شاخص ها برحسب روز، پیوسته حرکت کرده اند. این روند را میتوان از تغییر نسبتا آرام و پیوسته ی شماره ها که ترتیب خود را در طول مسیر کم و بیش حفظ کرده اند مشاهده کرد. مسیر تغییرات از بالا-چپ تصویر شروع می شود و آرام پس از چندبار تغییر مسیر، به سمت راست-وسط تصویر میرسند و مسیری 
+W 
+شکل را طی میکنند. در این مسیر، می توان با توجه به محورهای قرمز که تصویر داده ها روی محورهای اصلی (قبل از 
+PCA) را نشان میدهد، روند افزایش و کاهش شاخص های مختلف و بخش های مختلف تاریخ بورس را مشاهده کرد.
+</p>
+***
+
+<h5 dir="RTL">
+۷. روی همه اطلاعات (OHLCV) سهام اپل الگوریتم PCA را اعمال کنید. سپس از مولفه اول برای پیش بینی قیمت شروع سهام در روز آینده استفاده کنید. به سوالات سوال ۴ پاسخ دهید. آیا استفاده از مولفه اول نتیجه بهتری نسبت به داده open price برای پیش بینی قیمت دارد؟
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+<p dir="RTL">
+ابتدا باید داده های مربوط به شرکت اپل را از داده های اصلی جدا کنیم و ۵ ستون 
+OHLCV 
+شامل 
+Open 
+و 
+High 
+و 
+Low 
+و 
+Close 
+و 
+Volume 
+را هم به همراه ستون 
+Date 
+نگه داریم و باقی اطلاعات را دور بریزیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+data %>%
+  ungroup()%>%
+  filter(Symbol=="AAPL") %>%
+  select(Date, Open, High, Low, Close, Volume) %>%
+  na.omit() -> apple
+```
+<p dir="RTL">
+حالا می توانیم روی داده های ۵ ستون اصلی، از 
+PCA 
+استفاده کنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+pca = prcomp(apple[,-1], center=T, scale. = T)
+```
+<p dir="RTL">
+سپس باید مولفه اول از 
+PCA 
+را جدا کنیم و به داده اصلی ادغام کنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+pca = as.data.frame(pca$x)
+apple$PC1 = pca$PC1
+```
+<p dir="RTL">
+حالا تابع 
+modelMaker 
+را مشابه سوال ۴ مینویسیم. با این تفاوت که این بار تابع دو مدل میسازد. یکی سعی می کند 
+Open 
+را بر حسب 
+k 
+ردیف قبل از ستون 
+OHLCV 
+پیش بینی کند. دیگری سعی می کند 
+Open 
+را برحسب 
+k 
+ردیف قبل از ستون مربوط به مولفه اول 
+PCA 
+پیش بینی کند. در نهایت هم خطای هر دو را محاسبه کرده و برگرداند:
+</p>
+```{r, warning=FALSE, dpi=300}
+modelMaker = function(k)
+{
+  apple %>%
+    mutate(KO=lag(Open, k),
+           KH=lag(High, k),
+           KL=lag(Low, k),
+           KC=lag(Close, k),
+           KV=lag(Volume, k),
+           KPCA=lag(PC1, k))->tmp
+  
+  mydata = split(tmp, sample(1:5, nrow(tmp), replace=T))
+  d = mydata[1:4]
+  data1 = do.call("rbind", d)
+  d = mydata[5]
+  data2 = do.call("rbind", d)
+  
+  model1 = lm(Open ~ KO+KH+KL+KC+KV, data = data1)
+  model2 = lm(Open ~ KPCA,  data = data1)
+  
+  data2$PredictByOpen = predict(model1, data2)
+  data2$PredictByPCA  = predict(model2, data2)
+  
+  data2 %>%
+    na.omit() %>%
+    mutate(errOfOpen=abs(PredictByOpen-Open)*100/Open, 
+           errOfPCA =abs(PredictByPCA -Open)*100/Open) -> data2
+  
+  return(data.frame(errOfOpen=mean(data2$errOfOpen),
+                    errOfPCA =mean(data2$errOfPCA)))
+}
+```
+<p dir="RTL">
+سپس اعداد ۱ تا ۱۵ را به عنوان ورودی به تابع بالا می دهیم و خطا را به ازای هر 
+k، 
+محاسبه می کنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+K=1:15
+lmOpen = 1:length(K)
+lmPCA  = 1:length(K)
+
+for (i in K)
+{
+  df = modelMaker(K[i])
+  lmOpen[i] = df$errOfOpen
+  lmPCA[i]  = df$errOfPCA
+}
+```
+<p dir="RTL">
+در نهایت هم می توان درصد خطا برحسب 
+k 
+را برای هردو مدل رسم کرد:
+</p>
+```{r, warning=FALSE, dpi=300}
+df1 = data.frame(x=K, y=lmOpen)
+df2 = data.frame(x=K, y=lmPCA)
+
+highchart() %>% 
+  hc_add_series(name = "OHLCV", data = df1) %>% 
+  hc_add_series(name = "PC1", data = df2) %>%
+  hc_xAxis(title = list(text = "k")) %>%
+  hc_yAxis(title = list(text = "Error (%)")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL">
+همانطور که از نمودار مشخص است، در هر دو مدل بهترین 
+k 
+برابر با ۱ است. همچنین به ازای همه ی 
+kها، 
+مدلی که مانند سوال ۴ سعی میکرد قیمت 
+Open 
+را برحسب 
+k 
+ردیف قبل از داده ی
+OHLCV
+پیش بینی کند، خطای کمتری نسبت به مدلی دارد که سعی بر پیش بینی 
+Open 
+برحسب مولفه اول 
+PCA 
+دارد. بنابراین استفاده از 
+PCA 
+در این مسئله، باعث افزایش خطا شده و کار مناسبی نیست.
+</p>
+***
+
+<h5 dir="RTL">
+۸. نمودار سود نسبی شاخص s&p500 را رسم کنید. آیا توزیع سود نرمال است؟(از داده indexes استفاده کنید.)
+با استفاده از ده مولفه اول سوال پنج آیا می توانید سود و ضرر شاخص s&p500 را برای روز آينده پیش بینی کنید؟ از یک مدل رگرسیون لاجستیک استفاده کنید. درصد خطای پیش بینی را به دست آورید.
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+
+<p dir="RTL"> 
+شاخص 
+S&P500 
+(مخفف عبارت Standard and Poor's index) فهرستی است از ۵۰۰ سهام برتر در بازار بورس سهام نیویورک و نزدک. از این فهرست جهت قیاس در معاملات و خرید و فروش سهام و نیز جهت ارزیابی عملکرد شرکتهای بزرگ استفاده می شود. بیایید سود ماهانه این شاخص را حساب کنیم:
+</p>
+
+```{r, warning=FALSE, dpi=300}
+indexes %>%
+  select(Date, SP500) %>%
+  complete(Date = seq.Date(min(Date), max(Date), by="month")) %>%
+  mutate(monthlyReturnPercent= (lead(SP500, 1)-SP500)*100/SP500)->indexes
+```
+
+<p dir="RTL"> 
+شاخص 
+توزیع این شاخص به صورت زیر است:
+</p>
+```{r, warning=FALSE}
+hchart(indexes$monthlyReturnPercent, name = "Monthly Return") %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL"> 
+برای اینکه بفهمیم این توزیع نرمال است یا نه، میتوانیم به 
+Q-Q Plot
+اش هم نگاهی بیندازیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+qqnorm(indexes$monthlyReturnPercent)
+qqline(indexes$monthlyReturnPercent, col = 2)
+```
+<p dir="RTL"> 
+به نظر میرسد دنباله ها از خط راست فاصله میگیرند و این توزیع، نرمال نیست. اما برای بررسی کمی این مسئله، می توان از آزمون فرض نرمالیتی 
+Shapiro-Wilk 
+استفاده کرد:
+</p>
+```{r, warning=FALSE, dpi=300}
+shapiro.test(indexes$monthlyReturnPercent)
+```
+<p dir="RTL"> 
+از آنجا که 
+p-value 
+بسیار کم است، فرض نرمال بودن سود ماهانه این شاخص، فرض درستی نیست.
+</p>
+
+<p dir="RTL"> 
+اما اگر داده های سال های اخیر (۵سال اخیر) را نگاه کنیم، فرض نرمال بودن، فرض درستی به نظر می آید:
+</p>
+```{r, warning=FALSE, dpi=300}
+indexes %>%
+  filter(Date>=as.Date("2012-01-01")) ->tmp
+
+hchart(tmp$monthlyReturnPercent, name = "Monthly Return") %>%
+  hc_add_theme(hc_theme_ffx())
+
+qqnorm(tmp$monthlyReturnPercent)
+qqline(tmp$monthlyReturnPercent, col = 2)
+
+shapiro.test(tmp$monthlyReturnPercent)
+```
+<p dir="RTL"> 
+بنابراین به نظر میرسد در بازه های کوتاه مدت تر، سود ماهانه ی این شاخص، بیشتر به نرمال بودن نزدیک است. در حقیقت، همه میدانند که فرض نرمالیتی سود ماهانه این شاخص در بازه های بلند مدت، بخاطر افزایش احتمال نوسانات بازار، فرض بی نقصی نیست. اما تقریب خوبی از مسئله است و در عمل از این فرض استفاده می شود. هرچند برخی پیشنهاد داده اند که به جای توزیع نرمال، از توزیع لاپلاس که تقریب بهتری است استفاده شود. برای اطلاعات بیشتر:
+</p>
+<p dir="RTL">
+[اطلاعات بیشتر](https://seekingalpha.com/article/3959933-predicting-stock-market-returns-lose-normal-switch-laplace)
+</p>
+<p dir="RTL">
+همه ی این بحث ها در خصوص سود ماهانه صادق است. درباره سود روزانه، تقریب نرمال بودن توزیع، اصلا تقریب مناسبی نیست. برای اطلاعات بیشتر:
+</p>
+<p dir="RTL">
+[اطلاعات بیشتر](https://www.profoliocapital.com/single-post/2017/01/31/Are-SP-500-Returns-Normally-Distributed)
+</p>
+<p dir="RTL"> 
+برای پیش بینی سود یا ضرر روزانه، احتیاج به اطلاعات روزانه این شاخص داریم. اما از آنجا که اطلاعات ماهانه ی این شاخص داده شده است، با استفاده از کتابخانه ی 
+quantmod 
+باید اطلاعات روزانه مربوط به شاخص 
+S&P500 
+را دانلود کنیم:
+</p>
+
+```{r, warning=FALSE, dpi=300}
+SPX <- as.data.frame(getSymbols("^GSPC",auto.assign = FALSE, from = "2016-01-01"))
+
+SPX %>%
+  add_rownames() %>%
+  select(Date=rowname, SP500=GSPC.Open)->tmp
+
+tmp$Date=as.Date(tmp$Date)
+
+tmp = tmp[tmp$Date %in% PCAData$Date,]
+```
+<p dir="RTL"> 
+تعداد روزهایی که داده تمام شرکت ها در آن موجود باشد، ۱۲۶ روز است. بنابراین داده ی خیلی زیادی نداریم که از روی آن مدل بسازیم. اما سعی می کنیم با ۸۰ درصد از همین ۱۲۶ داده مدل بسازیم و با ۲۰ درصد آن نیز مدل خود را آزمایش کنیم. ابتدا روی داده ها مانند سوال ۵ 
+PCA 
+میزنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+pca = prcomp(PCAData[,-1], center=T, scale. = T)
+```
+<p dir="RTL"> 
+سپس ۱۰ مولفه ی اول را جدا می کنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+pcaData = as.data.frame(pca$x)
+pcaData = pcaData[,1:10]
+```
+<p dir="RTL"> 
+حالا باید داده ی مربوط به شاخص 
+S&P500 
+را با این داده ادغام کنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+pcaData$sp500 = tmp$SP500
+pcaData$Date = tmp$Date
+```
+<p dir="RTL"> 
+حالا باید سود روزانه این شاخص را حساب کنیم و سودده یا زیانده بودن آن را مشخص نماییم:
+</p>
+```{r, warning=FALSE, dpi=300}
+pcaData %>%
+  complete(Date = seq.Date(min(Date), max(Date), by="day")) %>%
+  mutate(dailyReturn=(lead(sp500,1)-sp500)*100/sp500, 
+         isReturning=ifelse(dailyReturn>0,1,0)) -> pcaData
+
+pcaData = na.omit(pcaData)
+```
+<p dir="RTL"> 
+حالا مدل را با ۸۰ درصد داده ها میسازیم و با ۲۰ درصد داده ها تست میکنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+index = sample(x= 1:nrow(pcaData), size = 0.8*nrow(pcaData), replace = F)
+train = pcaData[index,] 
+test =  pcaData[-index,]
+
+mylogit = glm(isReturning ~ PC1+PC2+PC3+PC4+PC5+
+                            PC6+PC7+PC8+PC9+PC10, 
+              family = "binomial", data=train)
+
+test$pred = predict(mylogit, newdata=test, type="response")
+```
+<p dir="RTL"> 
+نمودار توزیع دو گروه سودده و زیانده برحسب مقدار پیشبینی شده در مدل:
+</p>
+```{r, warning=FALSE, dpi=300}
+ggplot(test, aes(x=pred, y= ..density.., color=as.factor(isReturning))) +
+  geom_density(size=1) +
+  scale_color_economist(name="Is Returning", labels = c("No", "Yes")) +
+  xlab("Prediction")+
+  ylab("Count")+
+  theme_bw()
+```
+<p dir="RTL"> 
+حالا باید نمودار 
+Accuracy 
+برحسب 
+Cutoff 
+را برای داده ی تست رسم کنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+predTest <-  prediction(test$pred, test$isReturning)
+acc.perf = performance(predTest, measure = "acc")
+acc=data.frame(x1=as.vector(slot(acc.perf, "x.values")), y1=as.vector(slot(acc.perf, "y.values")))
+colnames(acc) = c("X", "Y")
+ggplot(acc, aes(x=X, y=Y)) + geom_line() +
+  xlab("Cutoff") + 
+  ylab("Accuracy")+ 
+  theme_bw()
+```
+<p dir="RTL"> 
+حالا باید ببینیم بیشترین 
+Accuracy 
+چه زمانی اتفاق می افتد:
+</p>
+```{r, warning=FALSE, dpi=300}
+ind = which.max(slot(acc.perf, "y.values")[[1]])
+acc = slot(acc.perf, "y.values")[[1]][ind]
+cutoff = slot(acc.perf, "x.values")[[1]][ind]
+print(c(accuracy= acc, cutoff = cutoff))
+```
+<p dir="RTL"> 
+مقدار 
+Cutoff 
+مطلوب و میزان 
+Accuracy 
+آن را در بالا مشاهده می کنید. درصد خطا هم به این صورت محاسبه میشود:
+</p>
+```{r, warning=FALSE, dpi=300}
+print((1-acc)*100)
+```
+***
+
+<h5 dir="RTL"> 
+۹. عکسی که در ابتدای متن آمده را در نظر بگیرید. با استفاده از pca عکس را فشرده کنید. سپس نمودار حجم عکس فشرده بر حسب تعداد مولفه اصلی را  رسم کنید. بهترین انتخاب برای انتخاب تعداد مولفه ها در جهت فشرده سازی چه عددی است؟
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+<p dir="RTL"> 
+ابتدا عکس را میخوانیم و روی آن 
+PCA 
+میزنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+img <- readJPEG("/Users/kayhan/Desktop/class_data/stock.jpg")
+
+r <- img[,,1]
+g <- img[,,2]
+b <- img[,,3]
+
+r.pca <- prcomp(r, center = FALSE)
+g.pca <- prcomp(g, center = FALSE)
+b.pca <- prcomp(b, center = FALSE)
+
+rgb.pca <- list(r.pca, g.pca, b.pca)
+```
+<p dir="RTL"> 
+سپس بازه ی بین ۳ مولفه تا تعداد مولفه هایی که نتیجه 
+PCA 
+دارد را به ۳۰ بخش تقسیم میکنیم که برای عکس ابتدای متن، برابر است با: 
+</p>
+```{r, warning=FALSE, dpi=300}
+seq.int(3, round(nrow(img)), length.out = 30)
+```
+<p dir="RTL"> 
+به ازای هر کدام از این تعداد مولفه ها یک عکس میسازیم (در مجموع ۳۰ تا عکس) و هرکدام را ذخیره میکنیم:
+</p>
+```{r, warning=FALSE, dpi=300}
+for (i in seq.int(3, round(nrow(img)), length.out = 30))
+{
+  pca.img <- sapply(rgb.pca, function(j)
+  {
+    compressed.img <- j$x[,1:i] %*% t(j$rotation[,1:i])
+  },
+  simplify = 'array')
+  writeJPEG(pca.img, paste('/Users/kayhan/Desktop/class_data/compressed/', round(i,0), '.jpg', sep = ''))
+}
+```
+<p dir="RTL"> 
+خروجی این ۳۰ تا عکس را میتوانید در گالری زیر ببینید:
+</p>
+```{r, warning=FALSE, dpi=300}
+original <- file.info("/Users/kayhan/Desktop/class_data/stock.jpg")$size / 1000
+imgs <- dir("/Users/kayhan/Desktop/class_data/compressed/")
+names = str_replace(imgs, ".jpg","")
+df = data.frame(Components=names, Size=0)
+df$Components=as.numeric(as.character(df$Components))
+df %>%
+  arrange(Components) ->df
+
+imgs <- c()
+ImgSize = function(name)
+{
+  full.path <- paste('/Users/kayhan/Desktop/class_data/compressed/', name, ".jpg", sep='')
+  imgs <<- cbind(imgs, full.path)
+  return(file.info(full.path)$size / 1000)
+}
+
+for (i in 1:dim(df)[1])
+  df$Size[i] = ImgSize(df$Components[i])*100/original
+
+display(readImage(imgs), method="browser", width=ncol(img), height=nrow(img))
+```
+<p dir="RTL"> 
+نمودار حجم عکس (چند درصد از عکس اولیه) برحسب تعداد مولفه ها هم به این صورت است:
+</p>
+```{r, warning=FALSE, dpi=300}
+df %>%
+  hchart(hcaes(x=Components, y=Size), type="line", name="Size") %>%
+  hc_xAxis(title = list(text = "No. of Components")) %>%
+  hc_yAxis(title = list(text = "Size (% of the Original Photo)")) %>%
+  hc_add_theme(hc_theme_ffx())
+```
+<p dir="RTL"> 
+از دید من بهترین حالت فشرده سازی، استفاده از تمام مولفه های 
+PCA 
+میباشد. چون بدون افت کیفیت (استفاده از ۱۰۰ درصد واریانس) حجم عکس به حدودا ۴۱ درصد حجم اولیه میرسد.
+</p>
+***
+
+<h5 dir="RTL"> 
+۱۰. پنج ایده جالبی که روی داده های مالی بالا می توانستیم پیاده کنیم را بیان کنید. (ایده کافی است نیازی به محاسبه بر روی داده نیست.)
+</h5>
+<h6 dir="RTL">
+پاسخ:
+</h6>
+<p dir="RTL"> 
+۱- 
+در سوال ۴ و ۷، به جای استفاده از
+k 
+روز قبل، از روندهای تغییرات در بازه های روزانه، هفتگی، ماهانه، فصلی و سالانه استفاده می کردیم و مدلمان را بر این اساس می ساختیم.
+</p>
+<p dir="RTL"> 
+۲- 
+میتوانستیم به جای (یا در کنار) ساخت مدل پیش بینی کننده قیمت بر اساس شاخص 
+OHLCV 
+در 
+k 
+روز قبل، قیمت را بر حسب میانگین قیمت 
+k 
+روز قبل مدل کنیم. به این ایده 
+Moving Average 
+گفته می شود.
+</p>
+<p dir="RTL"> 
+۳- 
+میتوانیم از ایده های مربوط به خوشه بندی یا حتی همبستگی استفاده کنیم و شرکتهایی که تشابهات زیادی در تغییرات سهامشان با هم دارند را تشخیص دهیم. شرکتهای درون یک خوشه، ازآنجا که تشابه زیادی با هم دارند، اگر یکی از آنها به مشکلی بربخورد، احتمال اینکه بقیه شان هم به مشکل بخورند زیاد است. بنابراین برای سرمایه گذار جالب است که برای کنترل ریسک، سرمایه خود را بین خوشه های مختلف پخش کند.
+</p>
+<p dir="RTL"> 
+۴- 
+میتوانستیم داده های مربوط به شرکت ها را تا سال مثلا ۲۰۱۶  تحلیل کنیم. سپس مدلی برای سرمایه گذاری میساختیم که سرمایه خود را با چه نسبتی روی چه شرکتهایی بگذاریم. سپس از داده های ۲۰۱۶ تا ۲۰۱۸ استفاده میکردیم تا ببینیم که اگر اینکار را میکردیم چه میزان سود به دست میاوردیم. اینکار باعث افزایش اعتماد به نفس شخص تحلیل کننده ی داده به نتایج تحلیلش و افزایش قدرت سرمایه گذاری او می شود.
+</p>
+<p dir="RTL"> 
+۵- 
+در بحث فشرده سازی عکس، فقط روی ستون ها کاهش بعد دادیم. می توان یکبار عکس را ۹۰ درجه ساعتگرد 
+Rotate 
+داد و سپس دوباره روی ستون های جدیدش (که قبلا سطرهایش بودند) مجددا 
+PCA 
+اجرا کرد. در نهایت هم دوباره عکس را ۹۰ درجه پادساعتگرد چرخاند تا به حالت اول برسد. در این صورت، بدون افت کیفیت فشرده سازی بیشتری انجام میگیرد.
+</p>
